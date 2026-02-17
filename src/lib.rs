@@ -1,8 +1,8 @@
 #![cfg_attr(not(feature = "std"), no_std)]
 use core::cell::UnsafeCell;
 use core::mem::MaybeUninit;
+use core::sync::atomic::AtomicUsize;
 use core::sync::atomic::Ordering;
-use core::sync::atomic::{AtomicBool, AtomicUsize};
 
 pub struct SingleProducer<'a, T, const S: usize>
 where
