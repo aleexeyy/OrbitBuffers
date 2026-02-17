@@ -34,7 +34,7 @@ Basic flow:
 1. Create the ring buffer with a compile-time size `S`.
 2. Call `split()` once to get producer and consumer handles.
 3. Producer calls `try_push(...)`.
-4. Consumer calls `try_read()`.
+4. Consumer calls `try_pop()`.
 
 ## Minimal Example
 
@@ -44,8 +44,8 @@ use rbuffer::SPSCRBuffer;
 let mut buffer = SPSCRBuffer::<u64, 1024>::new();
 let (mut producer, mut consumer) = buffer.split().unwrap();
 
-assert!(producer.try_push(42).is_some());
-assert_eq!(consumer.try_read(), Some(42));
+assert!(producer.try_push(42).is_ok());
+assert_eq!(consumer.try_pop(), Some(42));
 ```
 
 ## Constraints

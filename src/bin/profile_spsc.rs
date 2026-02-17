@@ -26,7 +26,7 @@ fn main() {
                     #[cfg(feature = "profiling")]
                     hot_loop_marker();
                     let value = black_box(i);
-                    while producer.try_push(value).is_none() {
+                    while producer.try_push(value).is_err() {
                         spin_loop();
                     }
                 }
@@ -37,7 +37,7 @@ fn main() {
                     #[cfg(feature = "profiling")]
                     hot_loop_marker();
                     let value = black_box(i);
-                    while producer.try_push(value).is_none() {
+                    while producer.try_push(value).is_err() {
                         spin_loop();
                     }
                 }
@@ -51,7 +51,7 @@ fn main() {
                     #[cfg(feature = "profiling")]
                     hot_loop_marker();
                     let value = loop {
-                        if let Some(v) = consumer.try_read() {
+                        if let Some(v) = consumer.try_pop() {
                             break v;
                         }
                         spin_loop();
@@ -65,7 +65,7 @@ fn main() {
                     #[cfg(feature = "profiling")]
                     hot_loop_marker();
                     let value = loop {
-                        if let Some(v) = consumer.try_read() {
+                        if let Some(v) = consumer.try_pop() {
                             break v;
                         }
                         spin_loop();

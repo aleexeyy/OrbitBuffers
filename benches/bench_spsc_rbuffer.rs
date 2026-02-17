@@ -26,7 +26,7 @@ fn bench_spsc_rbuffer(c: &mut Criterion) {
                         b_prod.wait();
                         for i in 0..N {
                             let value = black_box(i as u64);
-                            while producer.try_push(value).is_none() {
+                            while producer.try_push(value).is_err() {
                                 std::hint::spin_loop();
                             }
                         }
@@ -39,7 +39,7 @@ fn bench_spsc_rbuffer(c: &mut Criterion) {
                         for _ in 0..N {
                             let val;
                             loop {
-                                if let Some(v) = consumer.try_read() {
+                                if let Some(v) = consumer.try_pop() {
                                     val = v;
                                     break;
                                 }
@@ -73,11 +73,11 @@ fn bench_spsc_rbuffer(c: &mut Criterion) {
 
             for i in 0..N {
                 let value = black_box(i as u64);
-                while producer.try_push(value).is_none() {
+                while producer.try_push(value).is_err() {
                     std::hint::spin_loop();
                 }
                 loop {
-                    if let Some(v) = consumer.try_read() {
+                    if let Some(v) = consumer.try_pop() {
                         black_box(v);
                         break;
                     }

@@ -1,5 +1,6 @@
 #![cfg_attr(not(feature = "std"), no_std)]
 use core::cell::UnsafeCell;
+use core::hint::spin_loop;
 use core::mem::MaybeUninit;
 use core::sync::atomic::AtomicUsize;
 use core::sync::atomic::Ordering;
@@ -28,9 +29,53 @@ impl<'a, T, const S: usize> SingleProducer<'a, T, S>
 where
     T: Send,
 {
+    #[inline]
+    pub const fn capacity(&self) -> usize {
+        S - 1
+    }
+
+    #[inline]
+    pub fn free_space(&mut self) -> usize {
+        let free = (self
+            .cached_read_index
+            .wrapping_sub(self.write_index)
+            .wrapping_sub(1))
+            & (S - 1);
+
+        if free != 0 {
+            return free;
+        }
+
+        self.cached_read_index = self.buffer.real_read_index.0.load(Ordering::Acquire);
+
+        (self
+            .cached_read_index
+            .wrapping_sub(self.write_index)
+            .wrapping_sub(1))
+            & (S - 1)
+    }
+
+    #[inline]
+    pub fn is_full(&mut self) -> bool {
+        self.free_space() == 0
+    }
+
+    #[inline]
+    pub fn push(&mut self, mut data: T) {
+        loop {
+            match self.try_push(data) {
+                Ok(()) => return,
+                Err(value) => {
+                    data = value;
+                    spin_loop();
+                }
+            }
+        }
+    }
+
     #[cfg_attr(feature = "profiling", inline(never))]
     #[cfg_attr(not(feature = "profiling"), inline(always))]
-    pub fn try_push(&mut self, data: T) -> Option<()> {
+    pub fn try_push(&mut self, data: T) -> Result<(), T> {
         let next_write_index = (self.write_index + 1) & (S - 1);
 
         //check wether buffer is full and update cache if necessary
@@ -38,21 +83,21 @@ where
             self.cached_read_index = self.buffer.real_read_index.0.load(Ordering::Acquire);
 
             if next_write_index == self.cached_read_index {
-                return None;
+                return Err(data);
             }
         }
 
         // safety: the old value is dropped by consumer
-        let _ = unsafe { (*self.buffer.ring[self.write_index].get()).write(data) };
+        unsafe { (*self.buffer.ring[self.write_index].get()).write(data) };
+
+        self.write_index = next_write_index;
 
         self.buffer
             .real_write_index
             .0
             .store(next_write_index, Ordering::Release);
 
-        self.write_index = next_write_index;
-
-        Some(())
+        Ok(())
     }
 }
 
@@ -76,9 +121,40 @@ impl<'a, T, const S: usize> SingleConsumer<'a, T, S>
 where
     T: Send,
 {
+    #[inline]
+    pub const fn capacity(&self) -> usize {
+        S - 1
+    }
+
+    #[inline]
+    pub fn len(&mut self) -> usize {
+        let len = self.cached_write_index.wrapping_sub(self.read_index) & (S - 1);
+        if len != 0 {
+            return len;
+        }
+
+        self.cached_write_index = self.buffer.real_write_index.0.load(Ordering::Acquire);
+        self.cached_write_index.wrapping_sub(self.read_index) & (S - 1)
+    }
+
+    #[inline]
+    pub fn is_empty(&mut self) -> bool {
+        self.len() == 0
+    }
+
+    #[inline]
+    pub fn pop(&mut self) -> T {
+        loop {
+            if let Some(value) = self.try_pop() {
+                return value;
+            }
+            spin_loop();
+        }
+    }
+
     #[cfg_attr(feature = "profiling", inline(never))]
     #[cfg_attr(not(feature = "profiling"), inline(always))]
-    pub fn try_read(&mut self) -> Option<T> {
+    pub fn try_pop(&mut self) -> Option<T> {
         if self.read_index == self.cached_write_index {
             self.cached_write_index = self.buffer.real_write_index.0.load(Ordering::Acquire);
 
@@ -275,8 +351,8 @@ mod tests {
         let mut buffer = SPSCRBuffer::<u8, 1>::new();
         let (mut producer, mut consumer) = buffer.split().expect("split should succeed");
 
-        assert_eq!(producer.try_push(7), None);
-        assert_eq!(consumer.try_read(), None);
+        assert_eq!(producer.try_push(7), Err(7));
+        assert_eq!(consumer.try_pop(), None);
         assert_state_from_producer(&producer, 0);
     }
 
@@ -286,15 +362,15 @@ mod tests {
         let (mut producer, mut consumer) = buffer.split().expect("split should succeed");
 
         for _ in 0..64 {
-            assert_eq!(consumer.try_read(), None);
+            assert_eq!(consumer.try_pop(), None);
             assert_state_from_consumer(&consumer, 0);
         }
 
-        assert_eq!(producer.try_push(42), Some(()));
+        assert_eq!(producer.try_push(42), Ok(()));
         assert_state_from_producer(&producer, 1);
-        assert_eq!(consumer.try_read(), Some(42));
+        assert_eq!(consumer.try_pop(), Some(42));
         assert_state_from_consumer(&consumer, 0);
-        assert_eq!(consumer.try_read(), None);
+        assert_eq!(consumer.try_pop(), None);
         assert_state_from_consumer(&consumer, 0);
     }
 
@@ -307,18 +383,20 @@ mod tests {
         let (mut producer, mut consumer) = buffer.split().expect("split should succeed");
 
         for id in 0..7 {
-            assert_eq!(
-                producer.try_push(DropTracker::new(id, &drops, &clones)),
-                Some(())
+            assert!(
+                producer
+                    .try_push(DropTracker::new(id, &drops, &clones))
+                    .is_ok()
             );
         }
         assert_state_from_producer(&producer, 7);
 
         let before_write = producer.buffer.real_write_index.0.load(Ordering::Acquire);
         let before_read = producer.buffer.real_read_index.0.load(Ordering::Acquire);
-        assert_eq!(
-            producer.try_push(DropTracker::new(999, &drops, &clones)),
-            None
+        assert!(
+            producer
+                .try_push(DropTracker::new(999, &drops, &clones))
+                .is_err()
         );
         assert_eq!(drops.load(Ordering::Acquire), 1);
         assert_eq!(clones.load(Ordering::Acquire), 0);
@@ -333,11 +411,11 @@ mod tests {
         assert_state_from_producer(&producer, 7);
 
         for expected in 0..7 {
-            let value = consumer.try_read().expect("value should be present");
+            let value = consumer.try_pop().expect("value should be present");
             assert_eq!(value.id, expected);
             drop(value);
         }
-        assert!(consumer.try_read().is_none());
+        assert!(consumer.try_pop().is_none());
         assert_state_from_consumer(&consumer, 0);
         assert_eq!(clones.load(Ordering::Acquire), 0);
         assert_eq!(drops.load(Ordering::Acquire), 8);
@@ -353,9 +431,10 @@ mod tests {
             let (mut producer, _consumer) = buffer.split().expect("split should succeed");
 
             for id in 0..5 {
-                assert_eq!(
-                    producer.try_push(DropTracker::new(id, &drops, &clones)),
-                    Some(())
+                assert!(
+                    producer
+                        .try_push(DropTracker::new(id, &drops, &clones))
+                        .is_ok()
                 );
             }
 
@@ -377,15 +456,16 @@ mod tests {
             let (mut producer, mut consumer) = buffer.split().expect("split should succeed");
 
             for id in 0..4 {
-                assert_eq!(
-                    producer.try_push(DropTracker::new(id, &drops, &clones)),
-                    Some(())
+                assert!(
+                    producer
+                        .try_push(DropTracker::new(id, &drops, &clones))
+                        .is_ok()
                 );
             }
             assert_state_from_producer(&producer, 4);
 
-            let v0 = consumer.try_read().expect("value should be present");
-            let v1 = consumer.try_read().expect("value should be present");
+            let v0 = consumer.try_pop().expect("value should be present");
+            let v1 = consumer.try_pop().expect("value should be present");
             assert_eq!(v0.id, 0);
             assert_eq!(v1.id, 1);
             drop(v0);
@@ -407,9 +487,10 @@ mod tests {
             let mut buffer = SPSCRBuffer::<DropTracker<'_>, 8>::new();
             let (mut producer, _consumer) = buffer.split().expect("split should succeed");
             for id in 0..3 {
-                assert_eq!(
-                    producer.try_push(DropTracker::new(id, &drops, &clones)),
-                    Some(())
+                assert!(
+                    producer
+                        .try_push(DropTracker::new(id, &drops, &clones))
+                        .is_ok()
                 );
             }
             panic!("forced unwind");
@@ -426,18 +507,18 @@ mod tests {
         let (mut producer, mut consumer) = buffer.split().expect("split should succeed");
 
         for value in [11_u32, 22, 33] {
-            assert_eq!(producer.try_push(value), Some(()));
+            assert_eq!(producer.try_push(value), Ok(()));
         }
         assert_state_from_producer(&producer, 3);
 
         drop(producer);
-        assert_eq!(consumer.try_read(), Some(11));
+        assert_eq!(consumer.try_pop(), Some(11));
         assert_state_from_consumer(&consumer, 2);
-        assert_eq!(consumer.try_read(), Some(22));
+        assert_eq!(consumer.try_pop(), Some(22));
         assert_state_from_consumer(&consumer, 1);
-        assert_eq!(consumer.try_read(), Some(33));
+        assert_eq!(consumer.try_pop(), Some(33));
         assert_state_from_consumer(&consumer, 0);
-        assert_eq!(consumer.try_read(), None);
+        assert_eq!(consumer.try_pop(), None);
         assert_state_from_consumer(&consumer, 0);
     }
 
@@ -452,16 +533,18 @@ mod tests {
             drop(consumer);
 
             for id in 0..7 {
-                assert_eq!(
-                    producer.try_push(DropTracker::new(id, &drops, &clones)),
-                    Some(())
+                assert!(
+                    producer
+                        .try_push(DropTracker::new(id, &drops, &clones))
+                        .is_ok()
                 );
             }
             assert_state_from_producer(&producer, 7);
 
-            assert_eq!(
-                producer.try_push(DropTracker::new(777, &drops, &clones)),
-                None
+            assert!(
+                producer
+                    .try_push(DropTracker::new(777, &drops, &clones))
+                    .is_err()
             );
             assert_eq!(drops.load(Ordering::Acquire), 1);
             assert_eq!(clones.load(Ordering::Acquire), 0);
@@ -477,12 +560,12 @@ mod tests {
         let mut buffer = SPSCRBuffer::<u32, 8>::new();
         {
             let (mut producer, mut consumer) = buffer.split().expect("split should succeed");
-            assert_eq!(producer.try_push(1), Some(()));
-            assert_eq!(producer.try_push(2), Some(()));
-            assert_eq!(producer.try_push(3), Some(()));
-            assert_eq!(consumer.try_read(), Some(1));
-            assert_eq!(consumer.try_read(), Some(2));
-            assert_eq!(consumer.try_read(), Some(3));
+            assert_eq!(producer.try_push(1), Ok(()));
+            assert_eq!(producer.try_push(2), Ok(()));
+            assert_eq!(producer.try_push(3), Ok(()));
+            assert_eq!(consumer.try_pop(), Some(1));
+            assert_eq!(consumer.try_pop(), Some(2));
+            assert_eq!(consumer.try_pop(), Some(3));
             assert_state_from_consumer(&consumer, 0);
         }
 
@@ -504,8 +587,8 @@ mod tests {
 
         for cycle in 0..128_u32 {
             let (mut producer, mut consumer) = buffer.split().expect("split should succeed");
-            assert_eq!(producer.try_push(cycle), Some(()));
-            assert_eq!(consumer.try_read(), Some(cycle));
+            assert_eq!(producer.try_push(cycle), Ok(()));
+            assert_eq!(consumer.try_pop(), Some(cycle));
             assert_state_from_consumer(&consumer, 0);
             drop(producer);
             drop(consumer);
@@ -545,15 +628,15 @@ mod tests {
                     let value = step as u32;
                     let expected = if model.len() < CAPACITY {
                         model.push_back(value);
-                        Some(())
+                        Ok(())
                     } else {
-                        None
+                        Err(value)
                     };
                     assert_eq!(producer.try_push(value), expected);
                 }
                 _ => {
                     let expected = model.pop_front();
-                    assert_eq!(consumer.try_read(), expected);
+                    assert_eq!(consumer.try_pop(), expected);
                 }
             }
 
@@ -561,10 +644,10 @@ mod tests {
         }
 
         while let Some(expected) = model.pop_front() {
-            assert_eq!(consumer.try_read(), Some(expected));
+            assert_eq!(consumer.try_pop(), Some(expected));
             assert_state_from_consumer(&consumer, model.len());
         }
-        assert_eq!(consumer.try_read(), None);
+        assert_eq!(consumer.try_pop(), None);
         assert_state_from_consumer(&consumer, 0);
     }
 }
