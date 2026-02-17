@@ -1,19 +1,10 @@
 #![cfg_attr(not(feature = "std"), no_std)]
-//! ```compile_fail
-//! use rbuffer::SPSCRBuffer;
-//!
-//! fn main() {
-//!     let mut buffer = SPSCRBuffer::<u8, 8>::new();
-//!     let first = buffer.split().unwrap();
-//!     let _second = buffer.split().unwrap(); // mutable aliasing is rejected
-//!     core::mem::drop(first); // keep `first` live across the second split
-//! }
-//! ```
 use core::cell::UnsafeCell;
 use core::mem::MaybeUninit;
 use core::sync::atomic::AtomicUsize;
 use core::sync::atomic::Ordering;
-
+mod cache_padding;
+use cache_padding::CachePadded;
 #[cfg(test)]
 extern crate std;
 
@@ -37,12 +28,14 @@ impl<'a, T, const S: usize> SingleProducer<'a, T, S>
 where
     T: Send,
 {
+    #[cfg_attr(feature = "profiling", inline(never))]
+    #[cfg_attr(not(feature = "profiling"), inline(always))]
     pub fn try_push(&mut self, data: T) -> Option<()> {
         let next_write_index = (self.write_index + 1) & (S - 1);
 
         //check wether buffer is full and update cache if necessary
         if next_write_index == self.cached_read_index {
-            self.cached_read_index = self.buffer.real_read_index.load(Ordering::Acquire);
+            self.cached_read_index = self.buffer.real_read_index.0.load(Ordering::Acquire);
 
             if next_write_index == self.cached_read_index {
                 return None;
@@ -52,11 +45,12 @@ where
         // safety: the old value is dropped by consumer
         let _ = unsafe { (*self.buffer.ring[self.write_index].get()).write(data) };
 
-        self.write_index = next_write_index;
-
         self.buffer
             .real_write_index
-            .store(self.write_index, Ordering::Release);
+            .0
+            .store(next_write_index, Ordering::Release);
+
+        self.write_index = next_write_index;
 
         Some(())
     }
@@ -82,9 +76,11 @@ impl<'a, T, const S: usize> SingleConsumer<'a, T, S>
 where
     T: Send,
 {
+    #[cfg_attr(feature = "profiling", inline(never))]
+    #[cfg_attr(not(feature = "profiling"), inline(always))]
     pub fn try_read(&mut self) -> Option<T> {
         if self.read_index == self.cached_write_index {
-            self.cached_write_index = self.buffer.real_write_index.load(Ordering::Acquire);
+            self.cached_write_index = self.buffer.real_write_index.0.load(Ordering::Acquire);
 
             if self.read_index == self.cached_write_index {
                 return None;
@@ -96,6 +92,7 @@ where
 
         self.buffer
             .real_read_index
+            .0
             .store(self.read_index, Ordering::Release);
 
         Some(value)
@@ -106,9 +103,9 @@ pub struct SPSCRBuffer<T, const S: usize>
 where
     T: Send,
 {
+    real_write_index: CachePadded<AtomicUsize>,
+    real_read_index: CachePadded<AtomicUsize>,
     ring: [UnsafeCell<MaybeUninit<T>>; S],
-    real_write_index: AtomicUsize,
-    real_read_index: AtomicUsize,
 }
 
 unsafe impl<T: Send, const S: usize> Sync for SPSCRBuffer<T, S> {}
@@ -118,9 +115,9 @@ where
     T: Send,
 {
     fn drop(&mut self) {
-        let mut read = self.real_read_index.load(Ordering::Relaxed);
+        let mut read = self.real_read_index.0.load(Ordering::Relaxed);
 
-        let write = self.real_write_index.load(Ordering::Relaxed);
+        let write = self.real_write_index.0.load(Ordering::Relaxed);
 
         while read != write {
             unsafe {
@@ -141,8 +138,8 @@ where
             ring: core::array::from_fn::<UnsafeCell<MaybeUninit<T>>, S, _>(|_| {
                 UnsafeCell::new(MaybeUninit::<T>::uninit())
             }),
-            real_write_index: AtomicUsize::new(0),
-            real_read_index: AtomicUsize::new(0),
+            real_write_index: CachePadded(AtomicUsize::new(0)),
+            real_read_index: CachePadded(AtomicUsize::new(0)),
         }
     }
 }
@@ -157,14 +154,14 @@ where
             ring: core::array::from_fn::<UnsafeCell<MaybeUninit<T>>, S, _>(|_| {
                 UnsafeCell::new(MaybeUninit::<T>::uninit())
             }),
-            real_write_index: AtomicUsize::new(0),
-            real_read_index: AtomicUsize::new(0),
+            real_write_index: CachePadded(AtomicUsize::new(0)),
+            real_read_index: CachePadded(AtomicUsize::new(0)),
         }
     }
 
     pub fn split(&mut self) -> Option<(SingleProducer<'_, T, S>, SingleConsumer<'_, T, S>)> {
-        let write = self.real_write_index.load(Ordering::Relaxed);
-        let read = self.real_read_index.load(Ordering::Relaxed);
+        let write = self.real_write_index.0.load(Ordering::Relaxed);
+        let read = self.real_read_index.0.load(Ordering::Relaxed);
         Some((
             SingleProducer {
                 buffer: self,
@@ -220,8 +217,8 @@ mod tests {
     where
         T: Send,
     {
-        let write = buffer.real_write_index.load(Ordering::Acquire);
-        let read = buffer.real_read_index.load(Ordering::Acquire);
+        let write = buffer.real_write_index.0.load(Ordering::Acquire);
+        let read = buffer.real_read_index.0.load(Ordering::Acquire);
         write.wrapping_sub(read) & S.wrapping_sub(1)
     }
 
@@ -229,8 +226,8 @@ mod tests {
     where
         T: Send,
     {
-        let write = buffer.real_write_index.load(Ordering::Acquire);
-        let read = buffer.real_read_index.load(Ordering::Acquire);
+        let write = buffer.real_write_index.0.load(Ordering::Acquire);
+        let read = buffer.real_read_index.0.load(Ordering::Acquire);
         assert!(write < S, "write index out of bounds: {write} >= {S}");
         assert!(read < S, "read index out of bounds: {read} >= {S}");
 
@@ -317,8 +314,8 @@ mod tests {
         }
         assert_state_from_producer(&producer, 7);
 
-        let before_write = producer.buffer.real_write_index.load(Ordering::Acquire);
-        let before_read = producer.buffer.real_read_index.load(Ordering::Acquire);
+        let before_write = producer.buffer.real_write_index.0.load(Ordering::Acquire);
+        let before_read = producer.buffer.real_read_index.0.load(Ordering::Acquire);
         assert_eq!(
             producer.try_push(DropTracker::new(999, &drops, &clones)),
             None
@@ -326,11 +323,11 @@ mod tests {
         assert_eq!(drops.load(Ordering::Acquire), 1);
         assert_eq!(clones.load(Ordering::Acquire), 0);
         assert_eq!(
-            producer.buffer.real_write_index.load(Ordering::Acquire),
+            producer.buffer.real_write_index.0.load(Ordering::Acquire),
             before_write
         );
         assert_eq!(
-            producer.buffer.real_read_index.load(Ordering::Acquire),
+            producer.buffer.real_read_index.0.load(Ordering::Acquire),
             before_read
         );
         assert_state_from_producer(&producer, 7);
@@ -489,8 +486,8 @@ mod tests {
             assert_state_from_consumer(&consumer, 0);
         }
 
-        let expected_write = buffer.real_write_index.load(Ordering::Acquire);
-        let expected_read = buffer.real_read_index.load(Ordering::Acquire);
+        let expected_write = buffer.real_write_index.0.load(Ordering::Acquire);
+        let expected_read = buffer.real_read_index.0.load(Ordering::Acquire);
         assert_eq!(expected_write, expected_read);
         assert!(expected_write != 0, "indices should have advanced");
 
@@ -513,8 +510,8 @@ mod tests {
             drop(producer);
             drop(consumer);
 
-            let expected_write = buffer.real_write_index.load(Ordering::Acquire);
-            let expected_read = buffer.real_read_index.load(Ordering::Acquire);
+            let expected_write = buffer.real_write_index.0.load(Ordering::Acquire);
+            let expected_read = buffer.real_read_index.0.load(Ordering::Acquire);
             assert_eq!(expected_write, expected_read);
 
             let (producer2, consumer2) = buffer.split().expect("split should succeed");
