@@ -3,68 +3,90 @@ use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
 use crossbeam_utils::atomic::AtomicCell;
 
 
-pub struct Producer<T, const S: usize>
-    where T: Copy + Default {
+pub struct SPSCRBuffer<T, const S: usize>
+where T: Copy + Default {
 
-    rb: Arc<StackBuffer::<T, S>>,
-
+    buffer: [AtomicCell<T>; S],
+    real_write_index: AtomicUsize,
+    real_read_index: AtomicUsize,
 }
 
-impl<T, const S: usize> Producer<T, S> 
-    where T: Copy + Default {
+pub struct SingleProducer<T, const S: usize> where T: Copy + Default  {
+    buffer: Arc<SPSCRBuffer<T, S>>,
+    local_write_index: usize,
+    local_read_index: usize,
+}
 
-    pub fn try_push(&self, elem: T) -> Option<()>{
+impl <T, const S: usize> SingleProducer<T, S>
+where T: Copy + Default {
+    
 
 
-        let write_index = self.rb.write_index.load(Ordering::Acquire);
-        let read_index = self.rb.read_index.load(Ordering::Acquire);
 
-        if self.rb.is_full(read_index, write_index) {
-            return None;
+    pub fn try_push(&mut self, data: T) -> Option<()> {
+
+
+        if self.local_read_index == self.local_write_index {
+
+            self.local_read_index = self.buffer.real_read_index.load(Ordering::Acquire);
+
+            if self.local_read_index == self.local_write_index {
+
+                return None;
+            }
+
         }
 
-        self.rb.write_index.fetch_update(Ordering::Release, Ordering::Relaxed, |i| (i + 1)%S);
-        self.rb.rb[write_index].store(elem);
+
+        self.buffer.buffer[self.local_write_index].store(data);
+        self.buffer.real_write_index.fetch_add(1, Ordering::Release);
+
+        self.local_write_index += 1;
+        
+
         Some(())
     }
 }
 
-pub struct Consumer<T, const S: usize>
-    where T: Copy + Default {
 
-    rb: Arc<StackBuffer::<T, S>>,
+
+
+pub struct SingleConsumer<T, const S: usize> where T: Copy + Default  {
+    buffer: Arc<SPSCRBuffer<T, S>>,
+    local_write_index: usize,
+    local_read_index: usize,
 }
 
 
-#[derive(Default)]
-struct Slot<T> 
-    where T: Copy + Default
-{
-    data: AtomicCell<T>,
-    sequence: AtomicUsize,
-}
+impl <T, const S: usize> SPSCRBuffer<T, S>
+where T: Copy + Default {
 
-
-
-pub(crate) struct StackBuffer<T, const S: usize> 
-    where T: Copy + Default {
-    rb: [Slot<T>; S],
-    write_index: AtomicUsize,
-    read_index: AtomicUsize,
-}
-
-impl<T, const S: usize> StackBuffer<T, S> 
-    where T: Copy + Default {
     pub fn new() -> Self {
         Self {
-            rb: std::array::from_fn::<Slot<T>, S, _>(|_| Slot::default()),
-            write_index: AtomicUsize::default(),
-            read_index: AtomicUsize::default(),
+            buffer: std::array::from_fn::<AtomicCell<T>, S, _>(|_| AtomicCell::new(T::default())),
+            real_write_index: AtomicUsize::default(),
+            real_read_index: AtomicUsize::default(),
         }
     }
 
-    pub fn is_full(&self, read_index: usize, write_index: usize) -> bool {
-        
-        (write_index + 1) % S == read_index
+
+    pub fn create() -> (SingleProducer<T, S>, SingleConsumer<T, S>) {
+        let shared = Arc::new(Self::new());
+        (
+            SingleProducer {
+                buffer: shared.clone(),
+                local_write_index: 0,
+                local_read_index: 0,
+            },
+            SingleConsumer {
+                buffer: shared,
+                local_write_index: 0,
+                local_read_index: 0,
+            },
+        )
     }
+
 }
+
+
+// TODO: the ring buffers supposed to implement: SingleProducer, SingleConsumer, MultipleProducer, MultipleConsumer traits and overall custom Buffer trait, and based on them create generic Consumers and Producers
