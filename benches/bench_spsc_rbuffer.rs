@@ -15,8 +15,7 @@ fn bench_spsc_rbuffer(c: &mut Criterion) {
 
             for _ in 0..iters {
                 let mut buffer = SPSCRBuffer::<u64, 1024>::new();
-                let (mut producer, mut consumer) =
-                    buffer.split().expect("failed to split SPSC buffer");
+                let (mut producer, mut consumer) = buffer.split();
 
                 let barrier = Arc::new(Barrier::new(3));
 
@@ -67,7 +66,7 @@ fn bench_spsc_rbuffer(c: &mut Criterion) {
     c.bench_function("spsc ring buffer single-thread latency", |b| {
         b.iter(|| {
             let mut buffer = SPSCRBuffer::<u64, 1024>::new();
-            let (mut producer, mut consumer) = buffer.split().expect("failed to split SPSC buffer");
+            let (mut producer, mut consumer) = buffer.split();
 
             let start = Instant::now();
 

@@ -15,7 +15,7 @@ pub fn hot_loop_marker() {
 
 fn main() {
     let mut buffer = SPSCRBuffer::<usize, RING_SIZE>::new();
-    let (mut producer, mut consumer) = buffer.split().expect("split failed");
+    let (mut producer, mut consumer) = buffer.split();
     let barrier = Barrier::new(3);
 
     thread::scope(|scope| {

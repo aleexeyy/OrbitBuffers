@@ -42,7 +42,7 @@ Basic flow:
 use rbuffer::SPSCRBuffer;
 
 let mut buffer = SPSCRBuffer::<u64, 1024>::new();
-let (mut producer, mut consumer) = buffer.split().unwrap();
+let (mut producer, mut consumer) = buffer.split();
 
 assert!(producer.try_push(42).is_ok());
 assert_eq!(consumer.try_pop(), Some(42));

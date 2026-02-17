@@ -210,12 +210,13 @@ where
 {
     fn default() -> Self {
         assert!(S.is_power_of_two());
+        assert!(S > 1);
         Self {
+            real_write_index: CachePadded(AtomicUsize::new(0)),
+            real_read_index: CachePadded(AtomicUsize::new(0)),
             ring: core::array::from_fn::<UnsafeCell<MaybeUninit<T>>, S, _>(|_| {
                 UnsafeCell::new(MaybeUninit::<T>::uninit())
             }),
-            real_write_index: CachePadded(AtomicUsize::new(0)),
-            real_read_index: CachePadded(AtomicUsize::new(0)),
         }
     }
 }
@@ -226,19 +227,20 @@ where
 {
     pub fn new() -> Self {
         assert!(S.is_power_of_two());
+        assert!(S > 1);
         Self {
+            real_write_index: CachePadded(AtomicUsize::new(0)),
+            real_read_index: CachePadded(AtomicUsize::new(0)),
             ring: core::array::from_fn::<UnsafeCell<MaybeUninit<T>>, S, _>(|_| {
                 UnsafeCell::new(MaybeUninit::<T>::uninit())
             }),
-            real_write_index: CachePadded(AtomicUsize::new(0)),
-            real_read_index: CachePadded(AtomicUsize::new(0)),
         }
     }
 
-    pub fn split(&mut self) -> Option<(SingleProducer<'_, T, S>, SingleConsumer<'_, T, S>)> {
+    pub fn split(&mut self) -> (SingleProducer<'_, T, S>, SingleConsumer<'_, T, S>) {
         let write = self.real_write_index.0.load(Ordering::Relaxed);
         let read = self.real_read_index.0.load(Ordering::Relaxed);
-        Some((
+        (
             SingleProducer {
                 buffer: self,
                 write_index: write,
@@ -249,7 +251,7 @@ where
                 cached_write_index: write,
                 read_index: read,
             },
-        ))
+        )
     }
 }
 
@@ -349,7 +351,7 @@ mod tests {
     #[test]
     fn size_one_buffer_has_zero_usable_capacity() {
         let mut buffer = SPSCRBuffer::<u8, 1>::new();
-        let (mut producer, mut consumer) = buffer.split().expect("split should succeed");
+        let (mut producer, mut consumer) = buffer.split();
 
         assert_eq!(producer.try_push(7), Err(7));
         assert_eq!(consumer.try_pop(), None);
@@ -359,7 +361,7 @@ mod tests {
     #[test]
     fn read_from_empty_is_idempotent_and_keeps_internal_state() {
         let mut buffer = SPSCRBuffer::<u32, 8>::new();
-        let (mut producer, mut consumer) = buffer.split().expect("split should succeed");
+        let (mut producer, mut consumer) = buffer.split();
 
         for _ in 0..64 {
             assert_eq!(consumer.try_pop(), None);
@@ -380,7 +382,7 @@ mod tests {
         let clones = AtomicUsize::new(0);
 
         let mut buffer = SPSCRBuffer::<DropTracker<'_>, 8>::new();
-        let (mut producer, mut consumer) = buffer.split().expect("split should succeed");
+        let (mut producer, mut consumer) = buffer.split();
 
         for id in 0..7 {
             assert!(
@@ -428,7 +430,7 @@ mod tests {
 
         {
             let mut buffer = SPSCRBuffer::<DropTracker<'_>, 8>::new();
-            let (mut producer, _consumer) = buffer.split().expect("split should succeed");
+            let (mut producer, _consumer) = buffer.split();
 
             for id in 0..5 {
                 assert!(
@@ -453,7 +455,7 @@ mod tests {
 
         {
             let mut buffer = SPSCRBuffer::<DropTracker<'_>, 8>::new();
-            let (mut producer, mut consumer) = buffer.split().expect("split should succeed");
+            let (mut producer, mut consumer) = buffer.split();
 
             for id in 0..4 {
                 assert!(
@@ -485,7 +487,7 @@ mod tests {
 
         let result = catch_unwind(AssertUnwindSafe(|| {
             let mut buffer = SPSCRBuffer::<DropTracker<'_>, 8>::new();
-            let (mut producer, _consumer) = buffer.split().expect("split should succeed");
+            let (mut producer, _consumer) = buffer.split();
             for id in 0..3 {
                 assert!(
                     producer
@@ -504,7 +506,7 @@ mod tests {
     #[test]
     fn dropping_producer_does_not_invalidate_consumer() {
         let mut buffer = SPSCRBuffer::<u32, 8>::new();
-        let (mut producer, mut consumer) = buffer.split().expect("split should succeed");
+        let (mut producer, mut consumer) = buffer.split();
 
         for value in [11_u32, 22, 33] {
             assert_eq!(producer.try_push(value), Ok(()));
@@ -529,7 +531,7 @@ mod tests {
 
         {
             let mut buffer = SPSCRBuffer::<DropTracker<'_>, 8>::new();
-            let (mut producer, consumer) = buffer.split().expect("split should succeed");
+            let (mut producer, consumer) = buffer.split();
             drop(consumer);
 
             for id in 0..7 {
@@ -559,7 +561,7 @@ mod tests {
     fn split_starts_from_current_live_indices_not_zero() {
         let mut buffer = SPSCRBuffer::<u32, 8>::new();
         {
-            let (mut producer, mut consumer) = buffer.split().expect("split should succeed");
+            let (mut producer, mut consumer) = buffer.split();
             assert_eq!(producer.try_push(1), Ok(()));
             assert_eq!(producer.try_push(2), Ok(()));
             assert_eq!(producer.try_push(3), Ok(()));
@@ -574,7 +576,7 @@ mod tests {
         assert_eq!(expected_write, expected_read);
         assert!(expected_write != 0, "indices should have advanced");
 
-        let (producer, consumer) = buffer.split().expect("split should succeed");
+        let (producer, consumer) = buffer.split();
         assert_eq!(producer.write_index, expected_write);
         assert_eq!(producer.cached_read_index, expected_read);
         assert_eq!(consumer.read_index, expected_read);
@@ -586,7 +588,7 @@ mod tests {
         let mut buffer = SPSCRBuffer::<u32, 8>::new();
 
         for cycle in 0..128_u32 {
-            let (mut producer, mut consumer) = buffer.split().expect("split should succeed");
+            let (mut producer, mut consumer) = buffer.split();
             assert_eq!(producer.try_push(cycle), Ok(()));
             assert_eq!(consumer.try_pop(), Some(cycle));
             assert_state_from_consumer(&consumer, 0);
@@ -597,7 +599,7 @@ mod tests {
             let expected_read = buffer.real_read_index.0.load(Ordering::Acquire);
             assert_eq!(expected_write, expected_read);
 
-            let (producer2, consumer2) = buffer.split().expect("split should succeed");
+            let (producer2, consumer2) = buffer.split();
             assert_eq!(producer2.write_index, expected_write, "cycle={cycle}");
             assert_eq!(producer2.cached_read_index, expected_read, "cycle={cycle}");
             assert_eq!(consumer2.read_index, expected_read, "cycle={cycle}");
@@ -615,7 +617,7 @@ mod tests {
         const STEPS: usize = 20_000;
 
         let mut buffer = SPSCRBuffer::<u32, SIZE>::new();
-        let (mut producer, mut consumer) = buffer.split().expect("split should succeed");
+        let (mut producer, mut consumer) = buffer.split();
         let mut model = VecDeque::<u32>::with_capacity(CAPACITY);
 
         let mut seed = 0xF00D_F00D_CAFE_BABE_u64;
