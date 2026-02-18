@@ -3,7 +3,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use criterion::{Criterion, criterion_group, criterion_main};
-use rbuffer::SPSCRBuffer;
+use rbuffer::spsc_rbuffer::SPSCRBuffer;
 use std::hint::black_box;
 
 const N: usize = 20_000_000;

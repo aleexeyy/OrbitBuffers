@@ -1,4 +1,4 @@
-use rbuffer::SPSCRBuffer;
+use rbuffer::spsc_rbuffer::SPSCRBuffer;
 use std::hint::{black_box, spin_loop};
 use std::sync::Barrier;
 use std::thread;
