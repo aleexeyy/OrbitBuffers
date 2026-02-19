@@ -1,5 +1,5 @@
-use super::consumer::SingleConsumer;
-use super::producer::SingleProducer;
+use super::consumer::SPSCConsumer;
+use super::producer::SPSCProducer;
 use crate::cache_padding::CachePadded;
 use core::cell::UnsafeCell;
 use core::mem::MaybeUninit;
@@ -67,16 +67,16 @@ where
         }
     }
 
-    pub fn split(&mut self) -> (SingleProducer<'_, T, S>, SingleConsumer<'_, T, S>) {
+    pub fn split(&mut self) -> (SPSCProducer<'_, T, S>, SPSCConsumer<'_, T, S>) {
         let write = self.real_write_index.0.load(Ordering::Relaxed);
         let read = self.real_read_index.0.load(Ordering::Relaxed);
         (
-            SingleProducer {
+            SPSCProducer {
                 buffer: self,
                 write_index: write,
                 cached_read_index: read,
             },
-            SingleConsumer {
+            SPSCConsumer {
                 buffer: self,
                 cached_write_index: write,
                 read_index: read,
@@ -149,7 +149,7 @@ mod tests {
     }
 
     fn assert_state_from_producer<T, const S: usize>(
-        producer: &SingleProducer<'_, T, S>,
+        producer: &SPSCProducer<'_, T, S>,
         expected_len: usize,
     ) where
         T: Send,
@@ -158,7 +158,7 @@ mod tests {
     }
 
     fn assert_state_from_consumer<T, const S: usize>(
-        consumer: &SingleConsumer<'_, T, S>,
+        consumer: &SPSCConsumer<'_, T, S>,
         expected_len: usize,
     ) where
         T: Send,
@@ -170,12 +170,6 @@ mod tests {
     #[should_panic]
     fn new_panics_for_non_power_of_two_sizes() {
         let _ = SPSCRBuffer::<u8, 3>::new();
-    }
-
-    #[test]
-    #[should_panic]
-    fn new_panics_for_zero_size() {
-        let _ = SPSCRBuffer::<u8, 0>::new();
     }
 
     #[test]

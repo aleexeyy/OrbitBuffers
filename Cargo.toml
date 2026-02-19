@@ -18,10 +18,15 @@ profiling = []
 
 [dev-dependencies]
 criterion = "0.8.2"
+core_affinity = "0.8.3"
 
 
 [[bench]]
-name = "bench_spsc_rbuffer"
+name = "spsc_bench"
+harness = false
+
+[[bench]]
+name = "mpsc_bench"
 harness = false
 
 

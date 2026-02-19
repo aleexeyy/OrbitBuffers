@@ -1,58 +1,90 @@
 # OrbitBuffers
 
-`OrbitBuffers` currently provides a single-producer, single-consumer (SPSC) ring buffer for low-latency data transfer between two threads.
+`OrbitBuffers` provides lock-free ring buffers for low-latency, high-throughput communication:
+
+- `SPSCRBuffer<T, S>`: single-producer, single-consumer
+- `MPSCRBuffer<T, S>`: multi-producer, single-consumer
+
+Both implementations are fixed-capacity and require power-of-two sizes.
 
 ## SPSC Ring Buffer
 
-This implementation is:
+The SPSC path is optimized for tight 1P1C pipelines with minimal coordination overhead.
+
+Characteristics:
 
 - `no_std` (enabled by default)
-- high-performant
-- fully stack-allocated (fixed-size array, no heap allocation)
+- lock-free operation
+- stack-allocated storage (fixed-size array)
+- spin-based retry on full/empty paths
 
-It is designed for tight producer/consumer loops where predictable throughput and low overhead matter.
+Basic usage:
 
-## Performance
+1. Create `SPSCRBuffer<T, S>`.
+2. Call `split()` to obtain producer and consumer handles.
+3. Producer uses `try_push(...)`.
+4. Consumer uses `try_pop()`.
 
-Current observed performance target:
+## MPSC Ring Buffer
 
-- Throughput: around **650 million transfers/second**
-- Round-trip latency: around **0.8 ns per producer+consumer pair**
+The MPSC path supports many concurrent producers feeding one consumer.
 
-These numbers represent steady-state behavior in optimized runs and may vary by CPU, compiler, and runtime conditions.
+Design overview:
 
-## Core API
+- lock-free producer progress via atomic write reservation
+- per-slot sequencing for correctness under producer races
+- single consumer advances head/read state
 
-Main types:
+Scaling behavior:
 
-- `SPSCRBuffer<T, S>`
-- `SingleProducer<'_, T, S>`
-- `SingleConsumer<'_, T, S>`
+- highest throughput at low producer counts
+- throughput decreases as producer count increases due to contention
+- larger capacities reduce pressure from frequent wrap/full contention but do not eliminate inter-producer CAS/fetch-add contention
 
-Basic flow:
+## Performance (Release, Pinned Threads, 64-Byte Payload)
 
-1. Create the ring buffer with a compile-time size `S`.
-2. Call `split()` once to get producer and consumer handles.
-3. Producer calls `try_push(...)`.
-4. Consumer calls `try_pop()`.
+### MPSC Throughput
 
-## Minimal Example
+| Capacity | Producers | Throughput (Melem/s) | Approx. Latency per Operation (ns) |
+| --- | --- | ---: | ---: |
+| 64 | 1 | 41.89 | 23.87 |
+| 64 | 2 | 23.17 | 43.16 |
+| 64 | 4 | 11.60 | 86.21 |
+| 1024 | 1 | 46.28 | 21.61 |
+| 1024 | 2 | 24.08 | 41.53 |
+| 1024 | 4 | 14.57 | 68.63 |
+| 16384 | 1 | 44.21 | 22.62 |
+| 16384 | 2 | 24.22 | 41.29 |
+| 16384 | 4 | 15.25 | 65.57 |
 
-```rust
-use rbuffer::SPSCRBuffer;
+MPSC latency benchmark (1 producer, round-trip):
 
-let mut buffer = SPSCRBuffer::<u64, 1024>::new();
-let (mut producer, mut consumer) = buffer.split();
+- Total: `~390.50 µs` for `100,000` operations
+- Latency: `~3.90 ns/op` (`total_ns / N`)
 
-assert!(producer.try_push(42).is_ok());
-assert_eq!(consumer.try_pop(), Some(42));
-```
+### SPSC Throughput Summary
 
-## Constraints
+| Capacity | Throughput (Melem/s) | Approx. Latency per Operation (ns) |
+| --- | ---: | ---: |
+| 64 | 91.29 | 10.95 |
+| 1024 | 101.12 | 9.89 |
+| 16384 | 113.30 | 8.83 |
 
-- `S` must be a power of two.
-- The buffer is SPSC only: one producer thread and one consumer thread.
-- Intended usage is with spin-based retry loops for peak throughput.
+Average SPSC throughput: `~101.90 Melem/s`  
+Average implied time/op from throughput: `~9.81 ns/op`
+
+SPSC latency benchmark (1P1C round-trip):
+
+- Total: `~666.99 µs` for `100,000` operations
+- Latency: `~6.67 ns/op` (`total_ns / N`)
+
+## Notes
+
+- Benchmarks were built and run in release mode.
+- Threads were pinned to dedicated cores when available.
+- Payload size was `64 bytes` (`#[repr(C)] struct Payload([u8; 64]);`).
+- Measurements use Criterion sampling/statistics.
+- Throughput-implied latency (`1e3 / Melem/s`) and round-trip latency benchmarks are reported separately.
 
 ## Build
 

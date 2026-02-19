@@ -2,7 +2,7 @@ use super::rbuffer::SPSCRBuffer;
 use core::hint::spin_loop;
 use core::sync::atomic::Ordering;
 
-pub struct SingleConsumer<'a, T, const S: usize>
+pub struct SPSCConsumer<'a, T, const S: usize>
 where
     T: Send,
 {
@@ -11,14 +11,15 @@ where
     pub(super) read_index: usize,
 }
 
-impl<'a, T, const S: usize> Drop for SingleConsumer<'a, T, S>
+// implement drop to silence clippy warnings
+impl<'a, T, const S: usize> Drop for SPSCConsumer<'a, T, S>
 where
     T: Send,
 {
     fn drop(&mut self) {}
 }
 
-impl<'a, T, const S: usize> SingleConsumer<'a, T, S>
+impl<'a, T, const S: usize> SPSCConsumer<'a, T, S>
 where
     T: Send,
 {
@@ -92,7 +93,7 @@ mod tests {
     }
 
     fn assert_state_from_consumer<T, const S: usize>(
-        consumer: &SingleConsumer<'_, T, S>,
+        consumer: &SPSCConsumer<'_, T, S>,
         expected_len: usize,
     ) where
         T: Send,
