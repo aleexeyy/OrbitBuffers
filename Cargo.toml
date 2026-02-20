@@ -2,6 +2,22 @@
 name = "rbuffer"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.85"
+
+description = "Lock-free fixed-size SPSC and MPSC ring buffers for low-latency messaging."
+license = "MIT"
+repository = "https://github.com/aleexeyy/OrbitBuffers"
+
+readme = "README.md"
+keywords = ["ring-buffer", "lock-free", "spsc", "mpsc", "no-std"]
+categories = ["concurrency", "data-structures", "no-std"]
+homepage = "https://github.com/aleexeyy/OrbitBuffers"
+exclude = [
+    "benches/**",
+    "src/bin/**",
+    "target/**",
+    ".cargo/**",
+]
 
 
 [profile.release]

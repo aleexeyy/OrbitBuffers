@@ -2,6 +2,9 @@ use super::rbuffer::SPSCRBuffer;
 use core::hint::spin_loop;
 use core::sync::atomic::Ordering;
 
+/// Producer endpoint for [`SPSCRBuffer`].
+///
+/// This handle is intended to be owned by exactly one producer thread.
 pub struct SPSCProducer<'a, T, const S: usize>
 where
     T: Send,
@@ -23,11 +26,16 @@ impl<'a, T, const S: usize> SPSCProducer<'a, T, S>
 where
     T: Send,
 {
+    /// Returns the usable capacity of the ring buffer (`S - 1`).
     #[inline]
     pub const fn capacity(&self) -> usize {
         S - 1
     }
 
+    /// Returns the number of free slots currently visible to the producer.
+    ///
+    /// A cached consumer index is used first to minimize atomic loads, then
+    /// refreshed when it appears full.
     #[inline]
     pub fn free_space(&mut self) -> usize {
         let free = (self
@@ -49,11 +57,16 @@ where
             & (S - 1)
     }
 
+    /// Returns `true` if there is no room for another item.
     #[inline]
     pub fn is_full(&mut self) -> bool {
         self.free_space() == 0
     }
 
+    /// Pushes one item, spinning until space is available.
+    ///
+    /// Use this when bounded wait is acceptable and you want a simple blocking
+    /// producer API.
     #[inline]
     pub fn push(&mut self, mut data: T) {
         loop {
@@ -67,6 +80,10 @@ where
         }
     }
 
+    /// Attempts to push one item without blocking.
+    ///
+    /// Returns `Err(data)` when the buffer is full so the caller can retry or
+    /// apply backpressure without losing ownership of the value.
     #[cfg_attr(feature = "profiling", inline(never))]
     #[cfg_attr(not(feature = "profiling"), inline(always))]
     pub fn try_push(&mut self, data: T) -> Result<(), T> {

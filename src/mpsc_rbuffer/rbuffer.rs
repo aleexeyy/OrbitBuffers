@@ -5,6 +5,10 @@ use core::cell::UnsafeCell;
 use core::mem::MaybeUninit;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
+/// Internal slot used by [`MPSCRBuffer`] for sequence-based coordination.
+///
+/// This type is public for crate API stability, but is primarily an internal
+/// implementation detail and is not intended to be manipulated directly.
 pub struct Slot<T>
 where
     T: Send,
@@ -29,6 +33,7 @@ impl<T> Slot<T>
 where
     T: Send,
 {
+    /// Creates an uninitialized slot with an initial sequence value.
     fn new(i: usize) -> Self {
         Self {
             value: MaybeUninit::<T>::uninit(),
@@ -37,6 +42,14 @@ where
     }
 }
 
+/// Storage for a lock-free multi-producer/single-consumer ring buffer.
+///
+/// Producers reserve write positions atomically and coordinate through per-slot
+/// sequence numbers; the single consumer advances read state.
+///
+/// # Capacity semantics
+/// `S` must be a power of two and greater than `1`. Effective user capacity is
+/// `S - 1` elements.
 pub struct MPSCRBuffer<T, const S: usize>
 where
     T: Send,
@@ -96,6 +109,9 @@ impl<T, const S: usize> MPSCRBuffer<T, S>
 where
     T: Send,
 {
+    /// Creates an empty MPSC ring buffer.
+    ///
+    /// Panics if `S` is not a power of two or if `S <= 1`.
     pub fn new() -> Self {
         assert!(S.is_power_of_two());
         assert!(S > 1);
@@ -108,6 +124,10 @@ where
         }
     }
 
+    /// Splits the buffer into one producer handle and one consumer handle.
+    ///
+    /// The returned producer can be cloned to create additional producer
+    /// handles for other threads.
     pub fn split(&mut self) -> (MPSCProducer<'_, T, S>, MPSCConsumer<'_, T, S>) {
         let read = unsafe { *self.real_read_index.0.get() };
 

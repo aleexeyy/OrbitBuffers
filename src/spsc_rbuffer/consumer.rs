@@ -2,6 +2,9 @@ use super::rbuffer::SPSCRBuffer;
 use core::hint::spin_loop;
 use core::sync::atomic::Ordering;
 
+/// Consumer endpoint for [`SPSCRBuffer`].
+///
+/// This handle is intended to be owned by exactly one consumer thread.
 pub struct SPSCConsumer<'a, T, const S: usize>
 where
     T: Send,
@@ -23,11 +26,16 @@ impl<'a, T, const S: usize> SPSCConsumer<'a, T, S>
 where
     T: Send,
 {
+    /// Returns the usable capacity of the ring buffer (`S - 1`).
     #[inline]
     pub const fn capacity(&self) -> usize {
         S - 1
     }
 
+    /// Returns the number of queued items currently visible to the consumer.
+    ///
+    /// A cached producer index is used first and refreshed only when it appears
+    /// empty, reducing atomic traffic in the fast path.
     #[inline]
     pub fn len(&mut self) -> usize {
         let len = self.cached_write_index.wrapping_sub(self.read_index) & (S - 1);
@@ -39,11 +47,16 @@ where
         self.cached_write_index.wrapping_sub(self.read_index) & (S - 1)
     }
 
+    /// Returns `true` when no item is currently available.
     #[inline]
     pub fn is_empty(&mut self) -> bool {
         self.len() == 0
     }
 
+    /// Pops one item, spinning until data becomes available.
+    ///
+    /// Use this when bounded wait is acceptable and a blocking consumer path is
+    /// preferred.
     #[inline]
     pub fn pop(&mut self) -> T {
         loop {
@@ -54,6 +67,9 @@ where
         }
     }
 
+    /// Attempts to pop one item without blocking.
+    ///
+    /// Returns `None` if the buffer is currently empty.
     #[cfg_attr(feature = "profiling", inline(never))]
     #[cfg_attr(not(feature = "profiling"), inline(always))]
     pub fn try_pop(&mut self) -> Option<T> {

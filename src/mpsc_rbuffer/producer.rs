@@ -2,6 +2,10 @@ use core::{hint::spin_loop, sync::atomic::Ordering};
 
 use super::MPSCRBuffer;
 
+/// Producer endpoint for [`MPSCRBuffer`].
+///
+/// This handle is cheap to clone, allowing multiple producer threads to share
+/// the same queue.
 pub struct MPSCProducer<'a, T, const S: usize>
 where
     T: Send,
@@ -33,11 +37,17 @@ impl<'a, T, const S: usize> MPSCProducer<'a, T, S>
 where
     T: Send,
 {
+    /// Returns the usable capacity of the ring buffer (`S - 1`).
     #[inline]
     pub const fn capacity(&self) -> usize {
         S - 1
     }
 
+    /// Pushes one item into the buffer.
+    ///
+    /// This method may spin while waiting for the reserved slot to become
+    /// writable under contention. Current implementation always returns
+    /// `Ok(())` once the item is published to the consumer.
     #[cfg_attr(feature = "profiling", inline(never))]
     #[cfg_attr(not(feature = "profiling"), inline(always))]
     pub fn push(&mut self, data: T) -> Result<(), T> {

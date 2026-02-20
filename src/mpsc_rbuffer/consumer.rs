@@ -2,6 +2,9 @@ use core::{hint::spin_loop, sync::atomic::Ordering};
 
 use super::MPSCRBuffer;
 
+/// Consumer endpoint for [`MPSCRBuffer`].
+///
+/// This handle must be owned by exactly one consumer thread.
 pub struct MPSCConsumer<'a, T, const S: usize>
 where
     T: Send,
@@ -23,11 +26,16 @@ impl<'a, T, const S: usize> MPSCConsumer<'a, T, S>
 where
     T: Send,
 {
+    /// Returns the usable capacity of the ring buffer (`S - 1`).
     #[inline]
     pub const fn capacity(&self) -> usize {
         S - 1
     }
 
+    /// Returns an approximate number of queued items.
+    ///
+    /// This value is intended for heuristics and telemetry in concurrent use,
+    /// not for strict synchronization decisions.
     #[inline]
     pub fn len(&mut self) -> usize {
         let writer_pos = self.buffer.real_write_index.0.load(Ordering::Relaxed);
@@ -37,11 +45,13 @@ where
         writer_index.wrapping_sub(self.position) & (S - 1)
     }
 
+    /// Returns `true` when no item is currently visible to the consumer.
     #[inline]
     pub fn is_empty(&mut self) -> bool {
         self.len() == 0
     }
 
+    /// Pops one item, spinning until data becomes available.
     pub fn pop(&mut self) -> T {
         loop {
             if let Some(value) = self.try_pop() {
@@ -51,6 +61,9 @@ where
         }
     }
 
+    /// Attempts to pop one item without blocking.
+    ///
+    /// Returns `None` when the current read slot is not yet published.
     #[cfg_attr(feature = "profiling", inline(never))]
     #[cfg_attr(not(feature = "profiling"), inline(always))]
     pub fn try_pop(&mut self) -> Option<T> {

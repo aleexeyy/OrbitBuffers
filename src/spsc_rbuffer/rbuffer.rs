@@ -5,6 +5,14 @@ use core::cell::UnsafeCell;
 use core::mem::MaybeUninit;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
+/// Storage for a lock-free single-producer/single-consumer ring buffer.
+///
+/// This type owns the ring memory and shared indices. Call [`Self::split`] to
+/// get the producer and consumer handles used for actual data transfer.
+///
+/// # Capacity semantics
+/// `S` must be a power of two and greater than `1`. Effective user capacity is
+/// `S - 1` elements.
 pub struct SPSCRBuffer<T, const S: usize>
 where
     T: Send,
@@ -55,6 +63,9 @@ impl<T, const S: usize> SPSCRBuffer<T, S>
 where
     T: Send,
 {
+    /// Creates an empty SPSC ring buffer.
+    ///
+    /// Panics if `S` is not a power of two or if `S <= 1`.
     pub fn new() -> Self {
         assert!(S.is_power_of_two());
         assert!(S > 1);
@@ -67,6 +78,10 @@ where
         }
     }
 
+    /// Splits the buffer into its producer and consumer endpoints.
+    ///
+    /// The returned pair must be used with exactly one producer thread and one
+    /// consumer thread.
     pub fn split(&mut self) -> (SPSCProducer<'_, T, S>, SPSCConsumer<'_, T, S>) {
         let write = self.real_write_index.0.load(Ordering::Relaxed);
         let read = self.real_read_index.0.load(Ordering::Relaxed);
