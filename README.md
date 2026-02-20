@@ -1,6 +1,6 @@
-# OrbitBuffers
+# Rbuffer
 
-`OrbitBuffers` provides lock-free ring buffers for low-latency, high-throughput communication:
+`rbuffer` provides lock-free ring buffers for low-latency, high-throughput communication:
 
 - `SPSCRBuffer<T, S>`: single-producer, single-consumer
 - `MPSCRBuffer<T, S>`: multi-producer, single-consumer
@@ -25,6 +25,22 @@ Basic usage:
 3. Producer uses `try_push(...)`.
 4. Consumer uses `try_pop()`.
 
+Example:
+
+```rust
+use rbuffer::SPSCRBuffer;
+
+let mut buffer = SPSCRBuffer::<u32, 1024>::new();
+let (mut producer, mut consumer) = buffer.split();
+
+assert_eq!(producer.try_push(10), Ok(()));
+assert_eq!(producer.try_push(20), Ok(()));
+
+assert_eq!(consumer.try_pop(), Some(10));
+assert_eq!(consumer.try_pop(), Some(20));
+assert_eq!(consumer.try_pop(), None);
+```
+
 ## MPSC Ring Buffer
 
 The MPSC path supports many concurrent producers feeding one consumer.
@@ -40,6 +56,24 @@ Scaling behavior:
 - highest throughput at low producer counts
 - throughput decreases as producer count increases due to contention
 - larger capacities reduce pressure from frequent wrap/full contention but do not eliminate inter-producer CAS/fetch-add contention
+
+Example:
+
+```rust
+use rbuffer::{MPSCProducer, MPSCRBuffer};
+
+let mut buffer = MPSCRBuffer::<u64, 1024>::new();
+let (mut producer_a, mut consumer) = buffer.split();
+let mut producer_b: MPSCProducer<'_, u64, 1024> = producer_a.clone();
+
+assert!(producer_a.push(1).is_ok());
+assert!(producer_b.push(2).is_ok());
+
+let first = consumer.pop();
+let second = consumer.pop();
+assert!((first == 1 && second == 2) || (first == 2 && second == 1));
+assert_eq!(consumer.try_pop(), None);
+```
 
 ## Performance (Release, Pinned Threads, 64-Byte Payload)
 
@@ -67,11 +101,11 @@ MPSC latency benchmark (1 producer, round-trip):
 | Capacity | Throughput (Melem/s) | Approx. Latency per Operation (ns) |
 | --- | ---: | ---: |
 | 64 | 91.29 | 10.95 |
-| 1024 | 101.12 | 9.89 |
-| 16384 | 113.30 | 8.83 |
+| 1024 | 30.56 | 32.72 |
+| 16384 | 28.29 | 35.35 |
 
-Average SPSC throughput: `~101.90 Melem/s`  
-Average implied time/op from throughput: `~9.81 ns/op`
+Average SPSC throughput: `~50.05 Melem/s`  
+Average implied time/op from throughput: `~26.34 ns/op`
 
 SPSC latency benchmark (1P1C round-trip):
 
@@ -81,6 +115,7 @@ SPSC latency benchmark (1P1C round-trip):
 ## Notes
 
 - Benchmarks were built and run in release mode.
+- Benchmarks were run on Apple Silicon M4.
 - Threads were pinned to dedicated cores when available.
 - Payload size was `64 bytes` (`#[repr(C)] struct Payload([u8; 64]);`).
 - Measurements use Criterion sampling/statistics.
