@@ -6,12 +6,12 @@ rust-version = "1.85"
 
 description = "Lock-free fixed-size SPSC and MPSC ring buffers for low-latency messaging."
 license = "MIT"
-repository = "https://github.com/aleexeyy/OrbitBuffers"
+repository = "https://github.com/aleexeyy/rbuffer"
 
 readme = "README.md"
 keywords = ["ring-buffer", "lock-free", "spsc", "mpsc", "no-std"]
 categories = ["concurrency", "data-structures", "no-std"]
-homepage = "https://github.com/aleexeyy/OrbitBuffers"
+homepage = "https://github.com/aleexeyy/rbuffer"
 exclude = [
     "benches/**",
     "src/bin/**",
